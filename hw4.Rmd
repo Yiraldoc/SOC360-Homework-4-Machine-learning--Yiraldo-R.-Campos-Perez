@@ -1,0 +1,285 @@
+---
+title: "SOC360 Homework 4: Machine learning"
+author: "Yiraldo R. Campos Perez"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+# Do not edit this chunk
+
+# The following lines define how the output of code chunks should behave
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(include = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(error = TRUE)
+
+# Required packages, please install any you do not have
+library(rmarkdown)
+library(tidyverse)
+library(knitr)
+library(stringr)
+library(tidytext)
+library(ggplot2)
+library(viridis)
+library(tidymodels)
+library(textrecipes)
+library(glmnet)
+
+set.seed(148508901)
+```
+
+# Instructions
+
+This assignment is designed to build your familiarity with the machine techniques covered in class. As in the previous assignments, it will involve a combination of short written answers and coding in R. All answers should be written in this document. *Please write answers to written questions outside of the code cells rather than as comments.*
+
+### Requirements
+You should be viewing this document in RStudio. If you have not done so already, make sure to install the required packages (see initial chunk). You can do this by clicking the ``Install`` button in the Packages tab in the lower-right corner of RStudio and following the directions on the installation menu. You can also install packages by entering ``install.packages(x)`` into the R Console, where ``x`` is the name of the package.
+
+# Predicting political party from tweets
+
+## Loading the data
+We're going to be working with the Twitter politics dataset you used in the previous homework. This time you will be attempting to predict whether a tweet is written by a Democrat or a Republican.
+```{r loading data, echo=FALSE, tidy=TRUE, eval=TRUE, include=FALSE}
+
+data <- read_csv("data/politics_twitter.csv") %>% select(screen_name, text)
+data$party <- ifelse(data$screen_name %in% c("JoeBiden", "KamalaHarris", "SpeakerPelosi", "BernieSanders", "AOC", "SenSchumer"),
+                     "Democrat", "Republican")
+data <- data %>% 
+    mutate(text = gsub("#[A-Za-z0-9]+|@[A-Za-z0-9]", "", text)) %>% # Removing hashtags and mentions
+    mutate(text = gsub("(http[^ ]*)|(www.[^ ]*)", "", text)) %>% # Removing URLs
+    distinct(text, .keep_all =TRUE)
+```
+
+## Questions
+
+Q1. Before doing any modeling, examine whether there are any differences between the tweets by Republicans and Democrats with respect to how much they tweet. In the cell below, write a line of code to calculate the total number of tweets written by each group.
+```{r q1, tidy=TRUE, eval=TRUE, include=FALSE}
+
+#The first part would be to create a new data frame that has a new column called tweet.number and then give each tweet a 1 indicating it is 1 tweet. 
+
+tweet_party_total <- data %>%
+ mutate(tweet.numer = 1)
+
+#The next part would be to group the data frame by party and get the sum for each party by adding all the respective 1's
+  
+tweet_party_total <- tweet_party_total %>% 
+  group_by(party) %>%
+  summarise(total.tweet = sum(tweet.numer))
+
+print(tweet_party_total)
+
+```
+
+To make it a fair prediction task, we can take identically sized random samples from each group. Given the 50:50 class distribution, our baseline is a random guess. Run the chunk below then proceed.
+```{r sampling, tidy=TRUE, eval=TRUE, include=FALSE}
+rep.sample <- sample_n(data %>% filter(party == "Republican"), size=2000)
+dem.sample <- sample_n(data %>% filter(party == "Democrat"), size=2000)
+data <- bind_rows(rep.sample, dem.sample)
+```
+
+Q2. Now that we have our dataset, we can start to construct the modeling pipeline. The first step is to take a test-train split. Add arguments to `initial_split` to create a split where 20% of the data are held-out for testing and the classes are evenly balanced across test and training sets
+```{r q2, tidy=TRUE, eval=TRUE, include=FALSE}
+data_split <- initial_split(data, prop = 0.8) #only looking at 80% of the data
+train <- training(data_split)
+test <- testing(data_split)
+```
+
+Q3. Now we want to put together a recipe. The first line specifies that we are modeling the party as a function of the text using the training data. Add the following steps from the `textrecipes` package (in order):
+
+  - Tokenize
+  - Remove stopwords
+  - Add N-grams from length 1 to 3
+  - Filter to retain the 1000 most frequent n-grams
+  - Construct TF-IDF matrix
+
+You can use `prep` and `bake` to run this process and view the resulting feature matrix.
+```{r q3, tidy=TRUE, eval=TRUE, include=FALSE}
+party_recipe <- recipe(party ~ text, data  = train) %>% 
+    # Add your steps here
+  step_tokenize(text) %>%
+  step_stopwords(text) %>%
+  step_ngram(min_num_tokens = 1, num_tokens = 3) %>%
+  step_tokenfilter(text, max_tokens = 1000) %>%
+  step_tfidf(text)
+
+
+
+# Prints feature matrix example (do not modify)
+head(prep(party_recipe, train) %>% bake(test))
+
+```
+
+Q4. Let's add a model and put together a workflow. We will use a logistic regression with a LASSO penalty. Add the recipe and the model to the workflow `wf` then answer the question below.
+```{r q4, tidy=TRUE, eval=TRUE, include=FALSE}
+# Do not modify the model
+lasso <- logistic_reg(penalty = 0.01, mixture = 1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+wf <- workflow() %>% 
+  add_recipe(party_recipe) %>% 
+  add_model(lasso)
+  # Add your recipe and model
+
+print(wf)
+```
+What is the purpose of using a workflow?
+Answer:
+The purpose of using a workflow is to keep in a neatly manor all the information you have in addition to the recipe and or codes you will be using to run the data you possess. In terms of the code, by using the workflow, you are ensuring that the specific codes are ran each and every time. This makes it simple to run the data, and ensuring that no issue occurs since the code stays the same.
+
+Q5. We will use 5-fold cross-validation to evaluate performance on the training data. Modify the `vfold_cv` function to ensure that each fold has a balanced class distribution.
+
+Next, run the rest of the chunk to fit the model to each fold and calculate statistics. This may take a couple of minutes to complete. Answer the question below.
+```{r q5, echo=TRUE, tidy=TRUE}
+folds <- vfold_cv(train, v = 5, strata="party") # Add an argument for balance
+
+# Do not modify code below
+fitted <- fit_resamples(
+  wf,
+  folds,
+  control = control_resamples(save_pred = TRUE),
+  metrics = metric_set(precision, recall, f_meas, roc_auc)
+)
+```
+Why do we want to stratify the balance the class distribution in each fold?
+Answer: 
+By having a balanced distribution for each fold what we are ensuring is that there is not 1 fold where there are more democrats than republicans or the other way around. By doing this you are ensuring the information gathered is more reliable and accurate compared to if a fold is not balanced and can not be used as a generalization for the whole data frame.
+
+Q6. We can now get the predictions from the model and conduct some analyses of the results. Run these lines then answer the question below.
+```{r q6, echo=TRUE, tidy=TRUE}
+collect_metrics(fitted)
+```
+Interpret the precision and recall metrics.
+Answer:
+
+In terms of its precision, with a mean of .78, what this is saying that, every time the model indicates there is a positive, it is correct 78% of the times. Now in terms of it standard level of error, it is 0.013 which is low and this indicates that across all 5 folds the prediction is similar which is a positive thing. Now in terms of recall, there is a mean of 0.78 and what this means is that the model was able to identify when there was a positive instance roughly 78% of the times. In terms of its standard level of error, it is 0.02 which means that there is a low level of variability across all the 5 folds. In all, what we can see is that the model is running smoothly and the information we are getting is reliable and usable. 
+
+Q7. Let's try to perform the classification using an alternative model. Specifically, using a single-layer neural network from the `brulee` package. The documentation for `parsnip` (part of `tidymodels`) explains how to implement a neural network using the `mlp` function: https://parsnip.tidymodels.org/reference/mlp.html
+
+Complete the code below to specify the model and parameter grid. The model should have the following components: 
+
+    - The number of hidden units and dropout should be tunable.
+    - For the number of hidden units, test three different values between 10 and 100. #done
+    - For dropout, evaluate models with values of 0 and 0.05.  #done
+    - The training epochs should be fixed to 75. #done
+    - No additional arguments need to be specified.
+
+Once you have completed the code, answer the questions below then execute the chunk afterwards to run the models.
+```{r q7a, echo=TRUE, tidy=TRUE}
+# install.packages("brulee") # Uncomment and run to install brulee. Remove before knitting final submission
+# Note: The first time `brulee` is loaded respond "Yes" to the question in the console to download package files.
+#library(brulee)
+
+
+# Specify the arguments to the `mlp` function to set model parameters
+neural_network <- mlp() %>%
+  set_mode("classification") %>%
+  set_engine("brulee") %>%
+set_args(epochs = 75) # set that we want the model to look over the data set 75 times
+  
+# Specify a parameter grid
+param_grid <- grid_regular(
+  hidden_units(range = c(10, 100), trans = NULL),
+  dropout(range = c(0, 0.05), trans = NULL),
+   levels = 3 # to say i want to test 3 different values
+  )
+
+print(param_grid)
+```
+What is the purpose of the dropout parameter?
+Answer: Within a model, there may be an issue that when  data is given to said model, it will only learn from that data and the way it works within itself and only understanding the patterns within it and this leads to an issue of not being able to generalize in order to apply the information into other situations. This is called overfitting and the solution is using the dropout parameter. This function makes it so certain values are taken out which makes the model focus on the patterns as a whole which can be used for generalization, and not the specific pattern of the data
+
+What is an epoch?
+Answer: An epoch is the action of the model examining the data set in its entirety. My specific the epoch as 75, we are telling the model to look through the complete data set 75 times.
+
+In total, how many combinations of parameters are being analyzed?
+Answer: We are at looking at 9 combinations. This will be those that combine the hidden units of 10, 50, 100 and the dropout rates of 0.00, 0.025, 0.05 
+
+Taking the cross-validation into account, how many models will be estimated in this process?
+Answer: Taking into the cross-validation that we have already set, the total number of models that would be estimated in this process would be 45. This is becasue there are 9 combination and 5 folds
+
+Run the chunk below to add the model to the work flow and execute the code. As the code runs, you will see that R prints out the loss score at each epoch, representing how the model is fitting the data. It will also make a series of plots. You should see that the loss decreases over time, indicating that the model is learning to predict the outcome more accurately, although it can also fluctuate up and down as the model tests different weights.
+
+This code will take around 10-15 minutes to run since we need to fit several different models, so you might want to go for a walk or make a coffee. Note that it will also take a while to knit the document when you generate the final version since this process will be repeated.
+```{r q7b, echo=TRUE, tidy=TRUE}
+# Do not modify
+wf <- wf %>% update_model(neural_network)
+
+gridsearch <- tune_grid(
+  wf,
+  folds,
+  grid = param_grid,
+  metrics = metric_set(precision, recall, f_meas, roc_auc),
+  control = control_resamples(save_pred = TRUE)
+)
+
+```
+
+
+Q8. This plot shows how the different hyperparameter combinations affect performance. Run the chunk and answer the questions below.
+
+remove.packages("torch")
+install.packages("torch")
+library(torch)
+install_torch()
+show_notes(.Last.tune.result)
+
+```{r q8, echo=TRUE, tidy=TRUE}
+
+# Do not modify
+autoplot(gridsearch) + 
+  labs(title = "Model performance across regularization strength and type",
+  color = "dropout") + scale_color_viridis_d() + theme_classic()
+```
+Analyze the graph above and describe the effects of varying the two parameters. Is there an optimal combination of parameters? Are there any trade-offs?
+Answer:
+
+
+Q9.  Use `select_best()` to find the best performing model according to the ROC-AUC measure. Next, filter the results from `collect_metrics` to show the results for the best model. The table should have four rows. Inspect the F1, precision, and recall then answer the question below.
+```{r q9, echo=TRUE, tidy=TRUE}
+best_params <- select_best(gridsearch, metric = "roc_auc")
+collect_metrics(gridsearch) %>%
+  filter(best_params)# Complete the pipe
+```
+How does the model perform on each of the four metrics compared to the logistic regression used above (output from Q6)? Does it perform better or worse overall?
+Answer: 
+
+Q10. Run the code below to take the best parameters and estimate a final model. Proceed to the next chunk once the code has finished.
+```{r q10a, echo=TRUE, tidy=TRUE}
+# Do not modify
+final_wf <- finalize_workflow(wf, best_params)
+final_model <- last_fit(final_wf, data_split)
+```
+
+Execute this chunk to calculate the performance of the model on the out-of-sample test data then answer the questions below.
+```{r q10b, echo=TRUE, tidy=TRUE}
+# Do not modify
+final.precision <- collect_predictions(final_model) %>% precision(truth=party, estimate = .pred_class)
+final.recall <- collect_predictions(final_model) %>% recall(truth=party, estimate = .pred_class)
+final.f1 <- collect_predictions(final_model) %>% f_meas(truth=party, estimate = .pred_class)
+print(bind_rows(final.precision, final.recall, final.f1))
+```
+Does the model perform better or worse on the test data compared with the training data?
+Answer:
+
+Do these results imply that the model has underfit or overfit the training data?
+Answer:
+
+Is this task more or less difficult than you expected? Are there factors that might make it difficult to predict political affiliation from tweets?
+Answer:
+
+*This is the end of the assignment. Please submit it following the instructions below.*
+
+### AI usage
+Please use this space to document any usage of AI tools (e.g. ChatGPT) during this assignment:
+
+### Submitting the homework
+Once you have finished the assignment please complete the following steps to submit it:
+
+1. Click on the ``Knit`` menu at the top of the screen and select ``Knit to HTML``. This will execute the all of the code and render the RMarkdown document in HTML. Verify that this document contains all of your answers and that none of the chunks produce error messages. It will take a while to knit since the models must be reestimated.
+2. Add this document *and* the HTML file to Github. Use ``Homework submitted`` as your main commit message.
+3. Push the commit to Github.
+4. Visit the Github repository in your browser and verify that the final version of both files has been correctly uploaded.
